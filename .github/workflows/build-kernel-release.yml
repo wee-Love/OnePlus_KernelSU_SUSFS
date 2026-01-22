@@ -542,7 +542,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          
+
       - name: 🏷️ Generate and Create New Tag
         run: |
           BASE_TAG="$SUSFS_BASE_VERSION-r0"
@@ -577,9 +577,12 @@ jobs:
             if [ -f "$file" ]; then
               full_model=$(basename "$file" .txt)
               model=$(echo "$full_model" | sed -E 's/_[^_]*$//')
-              os_version=$(sed -n '2p' "$file")
               kernel_version=$(sed -n '1p' "$file")
-              device_info["$full_model"]="$model|$os_version|$kernel_version"
+              os_version=$(sed -n '2p' "$file")
+              ksu_type=$(sed -n '3p' "$file")
+              ksu_ver=$(sed -n '4p' "$file")
+              susfs_ver=$(sed -n '5p' "$file")
+              device_info["$full_model"]="$model|$os_version|$kernel_version|$ksu_type|$ksu_ver|$susfs_ver"
             fi
           done
           
@@ -625,7 +628,7 @@ jobs:
           EOF
           
           for full_key in $(printf '%s\n' "${!device_info[@]}" | sort); do
-            IFS='|' read -r model os_ver kernel_ver <<< "${device_info[$full_key]}"
+            IFS='|' read -r model os_ver kernel_ver _ _ _ <<< "${device_info[$full_key]}"
             
             # Use jq to extract feature flags for this model from the JSON matrix
             feature_flags=$(jq -r --arg MODEL "$model" '
@@ -654,6 +657,14 @@ jobs:
               "$model" "$os_ver" "$kernel_ver" "$features" >> release_notes.md
           done
           
+          if [ ${#device_info[@]} -gt 0 ]; then
+            first_entry=$(printf '%s\n' "${!device_info[@]}" | sort | head -n1)
+            IFS='|' read -r _ _ _ _ ksu_ver_global _ <<< "${device_info[$first_entry]}"
+          else
+            echo "::error::No device info found!" >&2
+            exit 1
+          fi
+          
           cat << EOF >> release_notes.md
           
           ---
@@ -663,15 +674,20 @@ jobs:
           | Component | Version/Setting |
           |-----------|----------------|
           EOF
-          if [ "${{ matrix.ksu_type }}" = "KSUN" ]; then
+          if [ -n "$KSUN_BRANCH" ]; then
             cat << EOF >> release_notes.md
           | **KernelSU Next Branch** | \`$KSUN_BRANCH\` |
-          | **KernelSU Next Version** | \`${{ needs.build.outputs.ksu_ver }}\` |
+          | **KernelSU Next Version** | \`$ksu_ver_global\` |
+          EOF
+          elif [ -n "$KSU_BRANCH" ]; then
+            cat << EOF >> release_notes.md
+          | **KernelSU Branch** | \`$KSU_BRANCH\` |
+          | **KernelSU Version** | \`$ksu_ver_global\` |
           EOF
           else
             cat << EOF >> release_notes.md
-          | **KernelSU Branch** | \`$KSU_BRANCH\` |
-          | **KernelSU Version** | \`${{ needs.build.outputs.ksu_ver }}\` |
+          | **Unknown KernelSU Fork Branch** | \`\` |
+          | **Unknown KernelSU Fork Version** | \`\` |
           EOF
           fi
           cat << EOF >> release_notes.md
@@ -696,11 +712,11 @@ jobs:
           
           ### 🔐 Root Management
           EOF
-          if [ "${{ matrix.ksu_type }}" = "KSUN" ]; then
+          if [ -n "$KSUN_BRANCH" ]; then
             cat << EOF >> release_notes.md
           - **KernelSU Next** - Next-generation kernel-level root solution
           EOF
-          else
+          elif [ -n "$KSU_BRANCH" ]; then
             cat << EOF >> release_notes.md
           - **KernelSU** - Kernel-level root solution
           EOF
@@ -743,15 +759,15 @@ jobs:
           
           ### Official Manager
           EOF
-          if [ "${{ matrix.ksu_type }}" = "KSUN" ]; then
+          if [ -n "$KSUN_BRANCH" ]; then
             cat << EOF >> release_notes.md
           - **KernelSU Next Manager**  
             → [GitHub Release](https://github.com/KernelSU-Next/KernelSU-Next/releases)
           EOF
-          else
+          elif [ -n "$KSU_BRANCH" ]; then
             cat << EOF >> release_notes.md
-          - **KernelSU Next Manager**  
-            → [GitHub Release](https://github.com/KernelSU-Next/KernelSU-Next/releases)
+          - **KernelSU Manager**  
+            → [GitHub Release](https://github.com/tiann/KernelSU/releases)
           EOF
           fi
           cat << EOF >> release_notes.md
@@ -772,31 +788,32 @@ jobs:
           ## 📥 Installation Instructions
           
           ### Prerequisites
-          - Unlocked bootloader
-          - Backup your current boot image
-          - Have root access using Magisk / KernelSU (Any forks) / Apatch
+          - Unlocked bootloader.
+          - Backup your current boot image.
+          - Have root access using Magisk / KernelSU (Any forks) / Apatch.
           
           ### Via Kernel Flasher
-          1. Download the appropriate ZIP for your device
-          2. Flash the ZIP file using Kernel Flasher
-          3. Reboot system
-          4. Install KernelSU-Next/WildSU Manager
-          5. Install SUSFS module from manager
+          1. Download the appropriate ZIP for your device.
+          2. Flash the ZIP file using Kernel Flasher.
+          3. Reboot system.
+          4. Install KernelSU-Next/WildSU Manager.
+          5. Install SUSFS module from manager.
           
           ---
           
           ## 📜 Changelog
           
           ### This Release
-          - Updated SUSFS to v2.0.0
+          - Updated SUSFS to v2.0.0.
           - Added HMBIRD support for all sm8750 devices.
-          - Improved ccache build system
-          - Enhanced SUSFS hiding capabilities
-          - Added IP_SET and TTL support
-          - Added TMPFS_XATTR and TMPFS_POSIX_ACL support for Mountify
-          - Added Ptrace leak fix for kernels < 5.16
-          - Compiler optimizations (${{ inputs.optimize_level }})
-          - Additional General Optimisations
+          - Improved ccache build system.
+          - Enhanced SUSFS hiding capabilities.
+          - Added IP_SET and TTL support.
+          - Added TMPFS_XATTR and TMPFS_POSIX_ACL support for Mountify.
+          - Added Ptrace leak fix for kernels < 5.16.
+          - Compiler optimizations (${{ inputs.optimize_level }}).
+          - Additional General Optimisations.
+          - Wild_KSU Manager Support.
           
           ### Previous Releases
           See [Releases Page](${{ github.server_url }}/${{ github.repository }}/releases)
@@ -826,7 +843,7 @@ jobs:
             --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}" \
             --title "${{ env.RELEASE_NAME }}" \
             --notes-file release_notes.md \
-            --prerelease
+            --draft
 
       - name: 📤 Upload Release Assets Dynamically
         run: |
