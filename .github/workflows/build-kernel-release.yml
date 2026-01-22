@@ -88,7 +88,7 @@ jobs:
           
           input="${{ github.event.inputs.op_model }}"
           ksu_options_raw='${{ github.event.inputs.ksu_options }}'
-          if ! ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c 'map(if .type then .type |= ascii_upcase | if .hash == null then if .type == "KSUN" then .hash = "dev" elif .type == "KSU" then .hash = "main" else .hash end else . end else error("No type found") end)' 2>&1); then
+          if ! ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c 'map(if .type then .type |= ascii_upcase | if .hash == null then if .type == "KSUN" then .hash = "dev" elif .type == "KSU" then .hash = "dev" else .hash = "dev" end else . end else . end)'); then
             echo "::error::ksu_options validation failed: $ksu_options_normalized"
             exit 1
           fi
@@ -180,24 +180,7 @@ jobs:
       - name: 📊 Build plan summary
         run: |
           ksu_options_raw='${{ github.event.inputs.ksu_options }}'
-          ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c 'map(if .type then .type |= ascii_upcase | if .hash == null then if .type == "KSUN" then .hash = "dev" elif .type == "KSU" then .hash = "main" else .hash end else . end else error("No type found") end)' 2>&1)
-          
-          # export KSU_OPTIONS="$ksu_options_normalized"
-          
-          # cat >> $GITHUB_STEP_SUMMARY << 'EOF'
-          # ## 🎯 Build Plan
-          
-          # **Target:** `${{ inputs.op_model }}`  
-          # **Devices:** ${{ steps.set-matrix.outputs.count }}  
-          
-          # **Configuration:**
-          # - KSU Config: `"$KSU_OPTIONS"`
-          # - Optimization: `${{ inputs.optimize_level }}`
-          # - Clean Build/No Ccache: ${{ inputs.clean_build && '✅ Yes' || '❌ No' }}
-          # - Create Release: ${{ inputs.make_release && '✅ Yes' || '❌ No' }}
-          
-          # **SUSFS Configuration:**
-          # EOF
+          ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c 'map(if .type then .type |= ascii_upcase | if .hash == null then if .type == "KSUN" then .hash = "dev" elif .type == "KSU" then .hash = "dev" else .hash = "dev" end else . end else . end)')
           
           {
             cat << 'EOF'
@@ -210,7 +193,6 @@ jobs:
           - KSU Config: `
           EOF
           
-            # Inject the shell variable
             printf '%s' "$ksu_options_normalized"
           
             cat << 'EOF'
@@ -223,7 +205,6 @@ jobs:
           EOF
           } >> "$GITHUB_STEP_SUMMARY"
           
-          # Display SUSFS config for each kernel version
           declare -A susfs_inputs=(
             ["android12-5.10"]="${{ inputs.android12-5_10_susfs_branch_or_commit }}"
             ["android13-5.15"]="${{ inputs.android13-5_15_susfs_branch_or_commit }}"
@@ -245,7 +226,6 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "> **💡 Note:** Empty values auto-map to matching \`gki-androidX-Y.Z\` branches." >> $GITHUB_STEP_SUMMARY
           
-          # Add OOS restriction note for android-kernel filters
           if [[ "${{ inputs.op_model }}" == android*-*.* ]]; then
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "> **⚠️ Android-Kernel Filter:** Only OOS15 and OOS16 devices will be built for \`${{ inputs.op_model }}\`" >> $GITHUB_STEP_SUMMARY
@@ -337,7 +317,7 @@ jobs:
           
           echo "susfs_branch=$susfs_branch" >> "$GITHUB_OUTPUT"
 
-      - name: 📥 Checkout Code
+      - name: ��� Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -380,6 +360,11 @@ jobs:
         shell: bash
         run: |
           echo "config_json=$(jq -nc --argjson m '${{ toJSON(matrix) }}' '$m | del(.ksu_type, .ksu_hash)')" >> "$GITHUB_OUTPUT"
+
+      - name: 🐺 Install WildKSU setup
+        shell: bash
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild
 
       - name: 🔨 Build Kernel
         id: build
@@ -539,341 +524,4 @@ jobs:
       SUSFS_BASE_VERSION: 'v2.0.0'
     steps:
       - name: 📥 Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: 🏷️ Generate and Create New Tag
-        run: |
-          BASE_TAG="$SUSFS_BASE_VERSION-r0"
-          LATEST_TAG=$(gh api repos/$REPO_OWNER/$REPO_NAME/tags --jq '.[0].name')
-          if [ -z "$LATEST_TAG" ]; then
-            LATEST_TAG="$BASE_TAG"
-          else
-            LATEST_TAG=$(printf "%s\n%s\n" "$LATEST_TAG" "$BASE_TAG" | sort -rV | head -n1)
-          fi
-          NEW_TAG=$(echo "$LATEST_TAG" | awk -F'-r' '{suffix=$2; if (!suffix) suffix=0; suffix++; printf "%s-r%d", $1, suffix}')
-          echo "New tag: $NEW_TAG"
-          echo "NEW_TAG=${NEW_TAG}" >> $GITHUB_ENV
-          git tag $NEW_TAG
-          git push origin $NEW_TAG
-
-      - name: 📥 Download Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: ./downloaded-artifacts
-
-      - name: 📝 Generate Device List and Final Release Notes
-        id: generate-notes
-        run: |
-          echo "=== Start building the release notes ==="
-          
-          # Collect build metadata
-          declare -A device_info
-          
-          JSON_BUILD_DATA=$(jq -c '.' ./downloaded-artifacts/build-matrix/matrix.json)
-          
-          for file in $(find downloaded-artifacts -name "*.txt" -type f | sort); do
-            if [ -f "$file" ]; then
-              full_model=$(basename "$file" .txt)
-              model=$(echo "$full_model" | sed -E 's/_[^_]*$//')
-              kernel_version=$(sed -n '1p' "$file")
-              os_version=$(sed -n '2p' "$file")
-              ksu_type=$(sed -n '3p' "$file")
-              ksu_ver=$(sed -n '4p' "$file")
-              susfs_ver=$(sed -n '5p' "$file")
-              device_info["$full_model"]="$model|$os_version|$kernel_version|$ksu_type|$ksu_ver|$susfs_ver"
-            fi
-          done
-          
-          ksu_options_raw='${{ github.event.inputs.ksu_options }}'
-          ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c 'map(if .type then .type |= ascii_upcase | if .hash == null then if .type == "KSUN" then .hash = "dev" elif .type == "KSU" then .hash = "main" else .hash end else . end else error("No type found") end)' 2>&1)
-          
-          ksun_hash=$(echo "$ksu_options_normalized" | jq -r 'map(select(.type == "KSUN")) | first | .hash // empty')
-          ksu_hash=$(echo "$ksu_options_normalized" | jq -r 'map(select(.type == "KSU")) | first | .hash // empty')
-          
-          # Get workflow inputs for reference
-          KSUN_BRANCH="$ksun_hash"
-          KSU_BRANCH="$ksu_hash"
-          
-          OPTIMIZE_LEVEL="${{ inputs.optimize_level }}"
-          CLEAN_BUILD="${{ inputs.clean_build }}"
-          
-          # Determine SUSFS branches used
-          SUSFS_A12="${{ inputs.android12-5_10_susfs_branch_or_commit }}"
-          SUSFS_A13="${{ inputs.android13-5_15_susfs_branch_or_commit }}"
-          SUSFS_A14="${{ inputs.android14-6_1_susfs_branch_or_commit }}"
-          SUSFS_A15="${{ inputs.android15-6_6_susfs_branch_or_commit }}"
-          SUSFS_A16="${{ inputs.android16-6_12_susfs_branch_or_commit }}"
-          
-          [ -z "$SUSFS_A12" ] && SUSFS_A12="gki-android12-5.10 (auto)"
-          [ -z "$SUSFS_A13" ] && SUSFS_A13="gki-android13-5.15 (auto)"
-          [ -z "$SUSFS_A14" ] && SUSFS_A14="gki-android14-6.1 (auto)"
-          [ -z "$SUSFS_A15" ] && SUSFS_A15="gki-android15-6.6 (auto)"
-          [ -z "$SUSFS_A16" ] && SUSFS_A16="gki-android16-6.12 (auto)"
-          
-          cat << EOF > release_notes.md
-          # 🎯 OnePlus Kernels with KernelSU Next & SUSFS $SUSFS_BASE_VERSION
-          
-          > **Build Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')  
-          > **Build ID:** \`${{ github.run_id }}\`  
-          > **Workflow:** [\`${{ github.workflow }}\`](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-          
-          ---
-          
-          ## 📦 Built Devices (${#device_info[@]} total)
-          
-          | Model | OS Version | Kernel Version | Features |
-          |-------|------------|----------------|----------|
-          EOF
-          
-          for full_key in $(printf '%s\n' "${!device_info[@]}" | sort); do
-            IFS='|' read -r model os_ver kernel_ver _ _ _ <<< "${device_info[$full_key]}"
-            
-            # Use jq to extract feature flags for this model from the JSON matrix
-            feature_flags=$(jq -r --arg MODEL "$model" '
-              .[] | 
-              select(.model == $MODEL) |
-              "\(.hmbird // false)\t\(.susfs // false)\t\(.bbr // false)\t\(.bbg // false)\t\(.ttl // false)\t\(.ip_set // false)"
-            ' <<< "$JSON_BUILD_DATA")
-            
-            features=""
-             # If no match found, skip or handle error
-            if [[ -z "$feature_flags" ]]; then
-              echo "Warning: No JSON entry found for model: $model" >&2
-            else
-              IFS=$'\t' read -r hmbird susfs bbr bbg ttl ip_set <<< "$feature_flags"
-              
-              # Build features string based on boolean values
-              [[ "$hmbird" == "true" ]] && features+="🐦 HMBIRD "
-              [[ "$susfs" == "true" ]] && features+="ඞ SusFS "
-              [[ "$bbr" == "true" ]] && features+="🚀 BBR "
-              [[ "$bbg" == "true" ]] && features+="🛡️ BBG "
-              [[ "$ttl" == "true" ]] && features+="⏱️ TTL "
-              [[ "$ip_set" == "true" ]] && features+="🔧 IP_SET"
-            fi
-            
-            printf "| %-13s | %-10s | %-16s | %-30s |\n" \
-              "$model" "$os_ver" "$kernel_ver" "$features" >> release_notes.md
-          done
-          
-          if [ ${#device_info[@]} -gt 0 ]; then
-            first_entry=$(printf '%s\n' "${!device_info[@]}" | sort | head -n1)
-            IFS='|' read -r _ _ _ _ ksu_ver_global _ <<< "${device_info[$first_entry]}"
-          else
-            echo "::error::No device info found!" >&2
-            exit 1
-          fi
-          
-          cat << EOF >> release_notes.md
-          
-          ---
-          
-          ## 🔧 Build Configuration
-          
-          | Component | Version/Setting |
-          |-----------|----------------|
-          EOF
-          if [ -n "$KSUN_BRANCH" ]; then
-            cat << EOF >> release_notes.md
-          | **KernelSU Next Branch** | \`$KSUN_BRANCH\` |
-          | **KernelSU Next Version** | \`$ksu_ver_global\` |
-          EOF
-          elif [ -n "$KSU_BRANCH" ]; then
-            cat << EOF >> release_notes.md
-          | **KernelSU Branch** | \`$KSU_BRANCH\` |
-          | **KernelSU Version** | \`$ksu_ver_global\` |
-          EOF
-          else
-            cat << EOF >> release_notes.md
-          | **Unknown KernelSU Fork Branch** | \`\` |
-          | **Unknown KernelSU Fork Version** | \`\` |
-          EOF
-          fi
-          cat << EOF >> release_notes.md
-          | **SUSFS Version** | \`$SUSFS_BASE_VERSION\` |
-          | **Optimization Level** | \`$OPTIMIZE_LEVEL\` |
-          | **Clean Build** | $( [ "$CLEAN_BUILD" = "true" ] && echo "✅ Yes (no ccache)" || echo "❌ No (ccache enabled)" ) |
-          | **Compiler** | Clang (version varies by device) |
-          
-          ### 📌 SUSFS Branch Mapping
-          
-          | Kernel Version | SUSFS Branch/Commit |
-          |----------------|---------------------|
-          | android12-5.10 | \`$SUSFS_A12\` |
-          | android13-5.15 | \`$SUSFS_A13\` |
-          | android14-6.1  | \`$SUSFS_A14\` |
-          | android15-6.6  | \`$SUSFS_A15\` |
-          | android16-6.12 | \`$SUSFS_A16\` |
-          
-          ---
-          
-          ## ✨ Features & Capabilities
-          
-          ### 🔐 Root Management
-          EOF
-          if [ -n "$KSUN_BRANCH" ]; then
-            cat << EOF >> release_notes.md
-          - **KernelSU Next** - Next-generation kernel-level root solution
-          EOF
-          elif [ -n "$KSU_BRANCH" ]; then
-            cat << EOF >> release_notes.md
-          - **KernelSU** - Kernel-level root solution
-          EOF
-          fi
-          cat << EOF >> release_notes.md
-          - **SUSFS $SUSFS_BASE_VERSION** - Advanced hiding and security features
-          - **Magic Mount Support** - Seamless file system modifications
-          - **Manual Hooks** - scope_min_manual_hooks_v1.4 for better compatibility
-          
-          ### 🛡️ Security & Privacy
-          - **Baseband Guard (BBG)** - LSM-based baseband security
-          - **SUSFS Hide Features**:
-            - ✅ SUS_PATH - Hide suspicious paths
-            - ✅ SUS_MOUNT - Hide mount points (No Cli Support)
-            - ✅ SUS_KSTAT - Spoof kernel statistics
-            - ✅ SPOOF_UNAME - Kernel version spoofing
-            - ✅ SPOOF_CMDLINE - Boot parameters spoofing
-            - ✅ OPEN_REDIRECT - File access redirection
-            - ✅ SUS_MAP - Memory mapping protection
-            - ✅ AVC_SPOOF - Spoof Procfs avc denial logs
-          - **Ptrace Leak Fix** - For kernels < 5.16
-          
-          ### 🚀 Performance & Networking
-          - **BBR** - Improved TCP congestion control
-          - **Wireguard** - Built-in VPN support
-          - **IP Set Support** - Advanced firewall capabilities
-          - **TTL Target Support** - Network packet manipulation
-          - **LTO (Link Time Optimization)** - Optimized binary size and performance
-          - **ccache-accelerated builds** - Faster compilation times
-          - **Optimisation Patches** - General Optimisation Patches for overall improvement
-          
-          ### 🔧 System Features
-          - **TMPFS_XATTR** - Extended attributes for tmpfs (Mountify support)
-          - **TMPFS_POSIX_ACL** - POSIX ACLs for tmpfs
-          - **HMBIRD SCX** - Scheduler extensions for all sm8750 devices
-          
-          ---
-          
-          ## 📱 Manager Applications
-          
-          ### Official Manager
-          EOF
-          if [ -n "$KSUN_BRANCH" ]; then
-            cat << EOF >> release_notes.md
-          - **KernelSU Next Manager**  
-            → [GitHub Release](https://github.com/KernelSU-Next/KernelSU-Next/releases)
-          EOF
-          elif [ -n "$KSU_BRANCH" ]; then
-            cat << EOF >> release_notes.md
-          - **KernelSU Manager**  
-            → [GitHub Release](https://github.com/tiann/KernelSU/releases)
-          EOF
-          fi
-          cat << EOF >> release_notes.md
-          ### Community Managers
-          - **WildKSU Manager** (Recommended for additional features)  
-            → [GitHub Release](https://github.com/WildKernels/Wild_KSU/releases)
-          
-          ### Required Module
-          - **KSU SUSFS Module** (Required for SUSFS features)  
-            → [GitHub Release](https://github.com/sidex15/ksu_module_susfs/releases)
-          
-          ### Recomended Flasher
-          - **Kernel Flasher** (Required for flashing AnyKernel3 zips and backups and OTA)  
-            → [GitHub Release](https://github.com/fatalcoder524/KernelFlasher/releases)
-          
-          ---
-          
-          ## 📥 Installation Instructions
-          
-          ### Prerequisites
-          - Unlocked bootloader.
-          - Backup your current boot image.
-          - Have root access using Magisk / KernelSU (Any forks) / Apatch.
-          
-          ### Via Kernel Flasher
-          1. Download the appropriate ZIP for your device.
-          2. Flash the ZIP file using Kernel Flasher.
-          3. Reboot system.
-          4. Install KernelSU-Next/WildSU Manager.
-          5. Install SUSFS module from manager.
-          
-          ---
-          
-          ## 📜 Changelog
-          
-          ### This Release
-          - Updated SUSFS to v2.0.0.
-          - Added HMBIRD support for all sm8750 devices.
-          - Improved ccache build system.
-          - Enhanced SUSFS hiding capabilities.
-          - Added IP_SET and TTL support.
-          - Added TMPFS_XATTR and TMPFS_POSIX_ACL support for Mountify.
-          - Added Ptrace leak fix for kernels < 5.16.
-          - Compiler optimizations (${{ inputs.optimize_level }}).
-          - Additional General Optimisations.
-          - Wild_KSU Manager Support.
-          
-          ### Previous Releases
-          See [Releases Page](${{ github.server_url }}/${{ github.repository }}/releases)
-          
-          ---
-          
-          ## 🙏 Credits
-          
-          - **KernelSU Next Team** - Root solution
-          - **KernelSU Team** - Root solution
-          - **simonpunk** - SUSFS development
-          - **OnePlus** - Kernel source code
-          - **Community Contributors** - Testing and feedback
-          
-          ---
-          
-          **⚡ Built with ❤️ by the community**
-          
-          EOF
-          
-          echo "--- Final Release Notes ---"
-          cat release_notes.md
-
-      - name: 🚀 Create GitHub Release
-        run: |
-          gh release create "${{ env.NEW_TAG }}" \
-            --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}" \
-            --title "${{ env.RELEASE_NAME }}" \
-            --notes-file release_notes.md \
-            --draft
-
-      - name: 📤 Upload Release Assets Dynamically
-        run: |
-          for file in ./downloaded-artifacts/*/*.zip; do
-            if [ -f "$file" ]; then
-              echo "Uploading $file..."
-              gh release upload "${{ env.NEW_TAG }}" "$file" --clobber
-            fi
-          done
-
-      - name: 📊 Release summary
-        if: success()
-        run: |
-          cat >> $GITHUB_STEP_SUMMARY << EOF
-          
-          ---
-          
-          ## 🎉 Release Created Successfully
-          
-          **Tag:** [\`${{ env.NEW_TAG }}\`](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ env.NEW_TAG }})  
-          **Kernels:** $(find ./downloaded-artifacts -name "*.zip" | wc -l)
-          
-          ### 📦 Assets
-          EOF
-          
-          for zip in ./downloaded-artifacts/*/*.zip; do
-            if [ -f "$zip" ]; then
-              name=$(basename "$zip")
-              size=$(stat -c%s "$zip")
-              size_mb=$(echo "scale=2; $size / 1024 / 1024" | bc)
-              echo "- \`$name\` (${size_mb} MB)" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
+        uses: actions/ch
